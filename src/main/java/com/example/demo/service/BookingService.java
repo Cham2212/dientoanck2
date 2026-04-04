@@ -84,7 +84,7 @@ public class BookingService {
                         logs.add(log("ERROR", "PREPARE fail: " + url));
                     }
                 }, executor));
-            }
+}
 
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
@@ -162,7 +162,7 @@ public class BookingService {
                 logs.add(log("DATABASE", "COMMIT local OK"));
 
                 // ===== PHASE 3: COMMIT =====
-                for (String url : preAckServers) {
+for (String url : preAckServers) {
                     try {
                         rt.postForObject(url + "/api/commit", b, String.class);
                         logs.add(log("4PC", "COMMIT → " + url));
