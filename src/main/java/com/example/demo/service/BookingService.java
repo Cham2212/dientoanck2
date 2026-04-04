@@ -60,15 +60,15 @@ public class BookingService {
         tick();
         logs.add(log("CLIENT", "Nhận request: " + b.getName()));
         b.setLamportTime(clock.get());
+        b.setReplicated(false); // mặc định
 
         CompletableFuture.runAsync(() -> {
 
-            try { // 🔥 FIX QUAN TRỌNG
-
+            try {
                 RestTemplate rt = createRestTemplate();
                 List<String> okServers = Collections.synchronizedList(new ArrayList<>());
 
-                // ===== PHASE 1 =====
+                // ===== PHASE 1: PREPARE =====
                 List<CompletableFuture<Void>> futures = new ArrayList<>();
 
                 for (String url : otherServers) {
@@ -103,7 +103,7 @@ logs.add(log("4PC", "VOTE OK từ " + url));
 
                 logs.add(log("4PC", "QUORUM OK → PRE-COMMIT"));
 
-                // ===== PHASE 2 =====
+                // ===== PHASE 2: PRE-COMMIT =====
                 List<String> preAckServers = Collections.synchronizedList(new ArrayList<>());
                 List<CompletableFuture<Void>> preFutures = new ArrayList<>();
 
@@ -134,17 +134,17 @@ logs.add(log("4PC", "VOTE OK từ " + url));
                     tick();
                     logs.add(log("4PC", "ĐỦ PRE_ACK → COMMIT"));
 
-                    // 🔥 DEBUG
-                    logs.add("DEBUG: chuẩn bị commit...");
-
                     // ===== COMMIT LOCAL =====
                     repository.save(b);
                     logs.add(log("DATABASE", "COMMIT local OK"));
+
+                    int success = 0;
 
                     // ===== COMMIT REMOTE =====
                     for (String url : preAckServers) {
                         try {
                             rt.postForObject(url + "/api/commit", b, String.class);
+                            success++;
                             logs.add(log("4PC", "COMMIT → " + url));
                         } catch (Exception e) {
                             logs.add(log("ERROR", "COMMIT fail: " + url));
@@ -154,7 +154,14 @@ logs.add(log("4PC", "VOTE OK từ " + url));
                                     .add(b);
                         }
                     }
-} else {
+// ===== SET REPLICATED =====
+                    if (success == preAckServers.size()) {
+                        b.setReplicated(true);
+                        repository.save(b);
+                        logs.add(log("DATABASE", "REPLICATED = TRUE"));
+                    }
+
+                } else {
                     logs.add(log("4PC", "TIMEOUT → ABORT"));
                     sendAbort(rt, okServers, b);
                 }
@@ -174,7 +181,7 @@ logs.add(log("4PC", "VOTE OK từ " + url));
         for (String url : pendingCommits.keySet()) {
 
             List<Booking> list = pendingCommits.get(url);
-            if (list == null) continue;
+            if (list == null || list.isEmpty()) continue;
 
             Iterator<Booking> it = list.iterator();
 
@@ -185,6 +192,23 @@ logs.add(log("4PC", "VOTE OK từ " + url));
                     rt.postForObject(url + "/api/commit", b, String.class);
                     logs.add(log("RECOVERY", "Đồng bộ lại thành công → " + url));
                     it.remove();
+
+                    // kiểm tra booking này còn pending ở server nào không
+                    boolean done = true;
+                    for (List<Booking> otherList : pendingCommits.values()) {
+                        if (otherList.contains(b)) {
+                            done = false;
+                            break;
+                        }
+                    }
+
+                    // nếu sync xong hết → set TRUE
+                    if (done) {
+                        b.setReplicated(true);
+                        repository.save(b);
+                        logs.add(log("DATABASE", "RECOVERY → REPLICATED = TRUE"));
+                    }
+
                 } catch (Exception e) {
                     logs.add(log("RECOVERY", "Server chưa sống → " + url));
                 }
@@ -192,6 +216,7 @@ logs.add(log("4PC", "VOTE OK từ " + url));
         }
     }
 
+    // ================= ABORT =================
     private void sendAbort(RestTemplate rt, List<String> servers, Booking b) {
         for (String url : servers) {
             try {
@@ -199,6 +224,7 @@ logs.add(log("4PC", "VOTE OK từ " + url));
             } catch (Exception ignored) {}
         }
     }
+
     private RestTemplate createRestTemplate() {
         SimpleClientHttpRequestFactory f = new SimpleClientHttpRequestFactory();
         f.setConnectTimeout(3000);
@@ -215,7 +241,7 @@ logs.add(log("4PC", "VOTE OK từ " + url));
 
     public String preCommit(Booking b) {
         updateClock(b.getLamportTime());
-        logs.add(log("4PC", "Nhận PRE-COMMIT"));
+logs.add(log("4PC", "Nhận PRE-COMMIT"));
         return "PRE_ACK";
     }
 
